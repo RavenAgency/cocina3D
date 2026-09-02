@@ -1,0 +1,1018 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   STATE
+============================================================ */
+// Espesor real de placa de MDF: 18 mm. Todas las puertas se modelan con
+// este espesor, y el ancho/profundidad (`dims`) de cada módulo ya es la
+// medida exterior (incluye sus propios laterales de 18mm). Por eso dos
+// módulos apoyados uno junto al otro (sin superponerse) sí representan el
+// contacto real placa-contra-placa: para sacar medidas de corte alcanza
+// con sumar los anchos nominales, sin restar ni agregar nada por espesor.
+const MDF_THICKNESS = 0.018;
+
+const room = { width: 3.6, depth: 3.0, height: 2.6, snap: true,
+  walls: { back:true, left:true, right:false, front:false, ceiling:false } };
+
+let wallColorHex = 0xE7E1D2;
+let floorPresetKey = 'oakLight';
+let counterColorHex = 0xEDEAE2;
+
+const placedObjects = [];
+let selected = null;
+let idCounter = 1;
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+============================================================ */
+const host = document.getElementById('canvas-host');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1d1f);
+scene.fog = new THREE.Fog(0x1b1d1f, 9, 22);
+
+const camera = new THREE.PerspectiveCamera(48, host.clientWidth/host.clientHeight, 0.05, 100);
+camera.position.set(4.6, 3.3, 5.4);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(host.clientWidth, host.clientHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+host.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 1.2;
+controls.maxDistance = 16;
+controls.target.set(0, 1.0, 0);
+controls.update();
+
+// Lighting
+scene.add(new THREE.HemisphereLight(0xdfe6f0, 0x2a2620, 0.55));
+const key = new THREE.DirectionalLight(0xfff2df, 2.1);
+key.position.set(4, 6, 3);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -5; key.shadow.camera.right = 5;
+key.shadow.camera.top = 5; key.shadow.camera.bottom = -5;
+key.shadow.camera.near = 0.5; key.shadow.camera.far = 20;
+key.shadow.bias = -0.0018;
+scene.add(key);
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.5);
+fill.position.set(-5, 3, -3);
+scene.add(fill);
+const rim = new THREE.PointLight(0xffe9c7, 0.6, 12, 2);
+rim.position.set(0, 2.3, 0);
+scene.add(rim);
+
+/* ============================================================
+   PROCEDURAL TEXTURES
+============================================================ */
+function makeCanvas(size=512){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  return { c, ctx: c.getContext('2d') };
+}
+function shade(hex, amt){
+  const c = new THREE.Color(hex);
+  const h = {r:c.r,g:c.g,b:c.b};
+  c.r = Math.min(1, Math.max(0, c.r + amt)); c.g = Math.min(1, Math.max(0, c.g + amt)); c.b = Math.min(1, Math.max(0, c.b + amt));
+  return '#' + c.getHexString();
+}
+function makePlankTexture(base, dark, planks=9){
+  const { c, ctx } = makeCanvas(512);
+  ctx.fillStyle = base; ctx.fillRect(0,0,512,512);
+  const ph = 512/planks;
+  for(let i=0;i<planks;i++){
+    const tint = (Math.random()-0.5)*0.05;
+    ctx.fillStyle = shade(base, tint);
+    ctx.fillRect(0, i*ph, 512, ph);
+    ctx.strokeStyle = 'rgba(0,0,0,.16)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, i*ph); ctx.lineTo(512, i*ph); ctx.stroke();
+    ctx.strokeStyle = shade(base, -0.12); ctx.lineWidth = 1;
+    for(let g=0; g<3; g++){
+      ctx.beginPath();
+      let x=0; ctx.moveTo(0, i*ph + ph*0.3 + g*ph*0.25);
+      while(x<512){ x+=24+Math.random()*30; ctx.lineTo(x, i*ph + ph*(0.3+g*0.25) + (Math.random()-0.5)*4); }
+      ctx.stroke();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeTileTexture(base, grout, tiles=6){
+  const { c, ctx } = makeCanvas(512);
+  ctx.fillStyle = grout; ctx.fillRect(0,0,512,512);
+  const s = 512/tiles, pad = 6;
+  for(let y=0;y<tiles;y++) for(let x=0;x<tiles;x++){
+    ctx.fillStyle = shade(base, (Math.random()-0.5)*0.035);
+    ctx.fillRect(x*s+pad/2, y*s+pad/2, s-pad, s-pad);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeConcreteTexture(base){
+  const { c, ctx } = makeCanvas(512);
+  ctx.fillStyle = base; ctx.fillRect(0,0,512,512);
+  for(let i=0;i<3200;i++){
+    const x = Math.random()*512, y = Math.random()*512, r = Math.random()*1.4;
+    ctx.fillStyle = `rgba(0,0,0,${Math.random()*0.06})`;
+    ctx.beginPath(); ctx.arc(x,y,r,0,7); ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const FLOOR_PRESETS = {
+  oakLight:   { label:'Roble claro', make:()=>makePlankTexture('#c9a374','#8a5f38'), tile:0.55 },
+  walnutDark: { label:'Nogal oscuro', make:()=>makePlankTexture('#5a3826','#2c1810'), tile:0.55 },
+  tileGrey:   { label:'Cerámica gris', make:()=>makeTileTexture('#a9aca9','#7d7f7c'), tile:0.45 },
+  tileWhite:  { label:'Cerámica blanca', make:()=>makeTileTexture('#eeece6','#c9c5ba'), tile:0.45 },
+  concrete:   { label:'Cemento pulido', make:()=>makeConcreteTexture('#9a958a'), tile:0.6 },
+};
+const WALL_COLORS = [
+  { label:'Marfil', hex:0xE7E1D2 },
+  { label:'Niebla', hex:0xD4D8D0 },
+  { label:'Salvia', hex:0xAEB89C },
+  { label:'Arcilla', hex:0xC79A78 },
+  { label:'Grafito', hex:0x4b4a47 },
+];
+const MDF_COLORS = [
+  { label:'Blanco', hex:0xF3F0E8 },
+  { label:'Arena', hex:0xD9CBAE },
+  { label:'Roble', hex:0xB3814F },
+  { label:'Salvia', hex:0x6E7F5C },
+  { label:'Grafito', hex:0x3A3A3C },
+  { label:'Marino', hex:0x2E3F52 },
+];
+const COUNTER_COLORS = [
+  { label:'Mármol claro', hex:0xEDEAE2 },
+  { label:'Gris piedra', hex:0x8b8d8a },
+  { label:'Negro absoluto', hex:0x232323 },
+  { label:'Roble', hex:0x8a6440 },
+];
+
+/* ============================================================
+   ROOM CONSTRUCTION
+============================================================ */
+const floorMat = new THREE.MeshStandardMaterial({ roughness:0.85, metalness:0.02 });
+const wallMat = new THREE.MeshStandardMaterial({ color: wallColorHex, roughness:0.95, metalness:0.0 });
+const ceilingMat = new THREE.MeshStandardMaterial({ color:0xf4f1ea, roughness:0.95 });
+
+let roomGroup = new THREE.Group();
+scene.add(roomGroup);
+
+let currentFloorTexture = null, currentFloorKey = null;
+function ensureFloorTexture(){
+  if(currentFloorKey === floorPresetKey) return;
+  if(currentFloorTexture) currentFloorTexture.dispose();
+  currentFloorTexture = FLOOR_PRESETS[floorPresetKey].make();
+  currentFloorKey = floorPresetKey;
+  floorMat.map = currentFloorTexture;
+  floorMat.needsUpdate = true;
+}
+function updateFloorRepeat(){
+  const preset = FLOOR_PRESETS[floorPresetKey];
+  currentFloorTexture.repeat.set(room.width/preset.tile, room.depth/preset.tile);
+}
+
+const skirtMat = new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.9 });
+
+function rebuildRoom(){
+  roomGroup.traverse(o=>{ if(o.geometry) o.geometry.dispose(); });
+  scene.remove(roomGroup);
+  roomGroup = new THREE.Group();
+  scene.add(roomGroup);
+
+  const { width:w, depth:d, height:h } = room;
+  ensureFloorTexture();
+  updateFloorRepeat();
+
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), floorMat);
+  floor.rotation.x = -Math.PI/2;
+  floor.receiveShadow = true;
+  roomGroup.add(floor);
+
+  if(room.walls.ceiling){
+    const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), ceilingMat);
+    ceil.rotation.x = Math.PI/2;
+    ceil.position.y = h;
+    ceil.receiveShadow = true;
+    roomGroup.add(ceil);
+  }
+  const wallDefs = [
+    { key:'back',  w:w, pos:[0, h/2, -d/2], rot:[0,0,0] },
+    { key:'front', w:w, pos:[0, h/2,  d/2], rot:[0,Math.PI,0] },
+    { key:'left',  w:d, pos:[-w/2, h/2, 0], rot:[0,Math.PI/2,0] },
+    { key:'right', w:d, pos:[ w/2, h/2, 0], rot:[0,-Math.PI/2,0] },
+  ];
+  wallDefs.forEach(def=>{
+    if(!room.walls[def.key]) return;
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(def.w, h), wallMat);
+    wall.position.set(...def.pos);
+    wall.rotation.set(...def.rot);
+    wall.receiveShadow = true;
+    roomGroup.add(wall);
+  });
+
+  // baseboard line for depth (subtle skirting)
+  wallDefs.forEach(def=>{
+    if(!room.walls[def.key]) return;
+    const sk = new THREE.Mesh(new THREE.BoxGeometry(def.w, 0.07, 0.02), skirtMat);
+    sk.position.set(def.pos[0], 0.035, def.pos[2]);
+    sk.rotation.y = def.rot[1];
+    if(def.key==='back') sk.position.z += 0.01;
+    if(def.key==='front') sk.position.z -= 0.01;
+    if(def.key==='left') sk.position.x += 0.01;
+    if(def.key==='right') sk.position.x -= 0.01;
+    roomGroup.add(sk);
+  });
+
+  key.shadow.camera.left = -Math.max(w,d)/1.6;
+  key.shadow.camera.right = Math.max(w,d)/1.6;
+  key.shadow.camera.top = Math.max(w,d)/1.6;
+  key.shadow.camera.bottom = -Math.max(w,d)/1.6;
+  key.shadow.camera.updateProjectionMatrix();
+
+  document.getElementById('room-readout').textContent =
+    `${Math.round(w*100)} × ${Math.round(d*100)} × ${Math.round(h*100)} cm`;
+
+  // Room may have shrunk — keep every placed piece clear of the new walls.
+  placedObjects.forEach(o=> clampToRoom(o));
+  if(selectBox && selected){ selectBox.update(); updatePropsCoords(); }
+}
+
+/* ============================================================
+   HELPERS FOR BUILDING MODULES
+============================================================ */
+function box(w,h,d,mat){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function cyl(r1,r2,h,mat,seg=20){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1,r2,h,seg), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function mdfMaterial(hex){ return new THREE.MeshStandardMaterial({ color:hex, roughness:0.55, metalness:0.03 }); }
+const HANDLE_MAT = new THREE.MeshStandardMaterial({ color:0x2b2b2b, roughness:0.35, metalness:0.7 });
+const KICK_MAT = new THREE.MeshStandardMaterial({ color:0x24211d, roughness:0.7 });
+const STEEL_MAT = new THREE.MeshStandardMaterial({ color:0xc9cdd1, roughness:0.28, metalness:0.85 });
+const STEEL_DARK = new THREE.MeshStandardMaterial({ color:0x6f7479, roughness:0.35, metalness:0.8 });
+const CHROME_MAT = new THREE.MeshStandardMaterial({ color:0xd9dce0, roughness:0.08, metalness:1 });
+
+function addDoorFace(group, w, h, depth, y, mdf, doorMats){
+  const gap = 0.008;
+  const nDoors = w > 0.9 ? 2 : 1;
+  const dw = (w - gap*(nDoors+1)) / nDoors;
+  for(let i=0;i<nDoors;i++){
+    const mat = mdfMaterial(mdf); doorMats.push(mat);
+    const door = box(dw, h, MDF_THICKNESS, mat);
+    door.position.set(-w/2 + gap + dw/2 + i*(dw+gap), y, depth/2 + 0.012);
+    group.add(door);
+    const handleX = (i===0) ? (nDoors===2 ? dw/2 - 0.04 : dw/2 - 0.05) : (-dw/2 + 0.04);
+    const handle = box(0.02, 0.14, 0.02, HANDLE_MAT);
+    handle.position.set(door.position.x + handleX, y, depth/2 + 0.03);
+    group.add(handle);
+  }
+}
+
+/* ---- Base cabinet (bajo mesada) ---- */
+function buildBaseCabinet(width, mdfHex){
+  const g = new THREE.Group();
+  const depth = 0.6, kickH = 0.1, carH = 0.62, topH = 0.04;
+  const doorMats = [];
+
+  const kick = box(width-0.04, kickH, depth-0.05, KICK_MAT);
+  kick.position.set(0, kickH/2, -0.02);
+  g.add(kick);
+
+  const carcassMat = mdfMaterial(mdfHex); doorMats.push(carcassMat);
+  const carcass = box(width, carH, depth, carcassMat);
+  carcass.position.set(0, kickH + carH/2, 0);
+  g.add(carcass);
+
+  addDoorFace(g, width-0.01, carH-0.03, depth, kickH+carH/2, mdfHex, doorMats);
+
+  const counter = new THREE.Mesh(new THREE.BoxGeometry(width+0.06, topH, depth+0.04), counterMaterial());
+  counter.position.set(0, kickH+carH+topH/2, 0.01);
+  counter.castShadow = counter.receiveShadow = true;
+  countertopMeshes.push(counter);
+  g.add(counter);
+
+  g.userData = {
+    type:'base', label:'Bajo mesada', colorable:true, mdfMaterials:doorMats,
+    widthRange:[0.4,1.2], width, baseY:0, dims:{w:width,h:kickH+carH+topH,d:depth}
+  };
+  return g;
+}
+
+/* ---- Wall cabinet (alacena) ---- */
+function buildWallCabinet(width, mdfHex){
+  const g = new THREE.Group();
+  const depth = 0.33, carH = 0.7;
+  const doorMats = [];
+  const carcassMat = mdfMaterial(mdfHex); doorMats.push(carcassMat);
+  const carcass = box(width, carH, depth, carcassMat);
+  carcass.position.set(0, carH/2, 0);
+  g.add(carcass);
+  addDoorFace(g, width-0.01, carH-0.03, depth, carH/2, mdfHex, doorMats);
+
+  g.userData = {
+    type:'wall', label:'Alacena', colorable:true, mdfMaterials:doorMats,
+    widthRange:[0.3,1.2], width, baseY:1.45, dims:{w:width,h:carH,d:depth}
+  };
+  return g;
+}
+
+/* ---- Tower / column ---- */
+function buildTower(width, mdfHex){
+  const g = new THREE.Group();
+  const depth = 0.6, totalH = 2.0, kickH = 0.1;
+  const doorMats = [];
+  const kick = box(width-0.04, kickH, depth-0.05, KICK_MAT);
+  kick.position.set(0, kickH/2, -0.02);
+  g.add(kick);
+
+  const carcassMat = mdfMaterial(mdfHex); doorMats.push(carcassMat);
+  const carH = totalH - kickH;
+  const carcass = box(width, carH, depth, carcassMat);
+  carcass.position.set(0, kickH+carH/2, 0);
+  g.add(carcass);
+
+  const lowerH = carH*0.62, upperH = carH*0.34, gapY=0.02;
+  addDoorFace(g, width-0.01, lowerH, depth, kickH + lowerH/2, mdfHex, doorMats);
+  addDoorFace(g, width-0.01, upperH, depth, kickH + lowerH + gapY + upperH/2, mdfHex, doorMats);
+
+  g.userData = {
+    type:'tower', label:'Columna', colorable:true, mdfMaterials:doorMats,
+    widthRange:[0.4,0.9], width, baseY:0, dims:{w:width,h:totalH,d:depth}
+  };
+  return g;
+}
+
+/* ---- Sink (bacha) ---- */
+function buildSink(){
+  const g = new THREE.Group();
+  const w=0.56, d=0.46;
+  const rim = box(w, 0.02, d, STEEL_MAT);
+  rim.position.set(0, 0.01, 0);
+  g.add(rim);
+  const basin = box(w-0.08, 0.16, d-0.08, STEEL_DARK);
+  basin.position.set(0, -0.06, 0);
+  g.add(basin);
+  const drain = cyl(0.025,0.025,0.01, new THREE.MeshStandardMaterial({color:0x1c1d1e, roughness:0.4, metalness:0.6}));
+  drain.position.set(0, -0.13, 0);
+  g.add(drain);
+
+  g.userData = { type:'sink', label:'Bacha', colorable:false, mdfMaterials:[],
+    widthRange:null, baseY:0.77, dims:{w,h:0.18,d} };
+  return g;
+}
+
+/* ---- Faucet (grifo) ---- */
+function buildFaucet(){
+  const g = new THREE.Group();
+  const base = cyl(0.03,0.035,0.03, CHROME_MAT);
+  base.position.set(0,0.015,0);
+  g.add(base);
+  const pipe = cyl(0.013,0.013,0.26, CHROME_MAT);
+  pipe.position.set(0,0.03+0.13,0);
+  g.add(pipe);
+  const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.016,16,16), CHROME_MAT);
+  elbow.position.set(0,0.03+0.26,0);
+  g.add(elbow);
+  const spout = cyl(0.011,0.011,0.16, CHROME_MAT);
+  spout.rotation.x = Math.PI/2;
+  spout.position.set(0, 0.03+0.26, 0.08);
+  g.add(spout);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.013,12,12), CHROME_MAT);
+  tip.position.set(0,0.03+0.26,0.16);
+  g.add(tip);
+  const handle = cyl(0.006,0.006,0.09, CHROME_MAT);
+  handle.rotation.z = Math.PI/2.4;
+  handle.position.set(0.02, 0.03+0.22, -0.02);
+  g.add(handle);
+
+  g.userData = { type:'faucet', label:'Grifo', colorable:false, mdfMaterials:[],
+    widthRange:null, baseY:0.76, dims:{w:0.1,h:0.32,d:0.2} };
+  return g;
+}
+
+/* ---- Fridge (heladera) ---- */
+function buildFridge(){
+  const g = new THREE.Group();
+  const w=0.7, d=0.65, h=1.8;
+  const body = box(w,h,d, STEEL_MAT);
+  body.position.set(0,h/2,0);
+  g.add(body);
+  const freezerH = 0.5;
+  const divider = box(w+0.005, 0.025, d+0.005, STEEL_DARK);
+  divider.position.set(0, freezerH, 0);
+  g.add(divider);
+  const seam = box(w+0.004, h-freezerH-0.06, 0.01, STEEL_DARK);
+  seam.position.set(0, freezerH + (h-freezerH)/2 + 0.01, d/2+0.005);
+  g.add(seam);
+  const handleTop = box(0.03, h-freezerH-0.25, 0.03, HANDLE_MAT);
+  handleTop.position.set(w/2-0.07, freezerH + (h-freezerH)/2 + 0.02, d/2+0.02);
+  g.add(handleTop);
+  const handleBottom = box(0.03, freezerH-0.15, 0.03, HANDLE_MAT);
+  handleBottom.position.set(w/2-0.07, freezerH/2, d/2+0.02);
+  g.add(handleBottom);
+
+  g.userData = { type:'fridge', label:'Heladera', colorable:false, mdfMaterials:[],
+    widthRange:null, baseY:0, dims:{w,h,d} };
+  return g;
+}
+
+/* ---- Range hood (campana piramidal) — tapered steel canopy + straight flue, uniform
+   brushed-steel finish like a real pyramidal hood (base widens to width×depth, tapers
+   up to a flat plateau, flue sits on that plateau with a dark trim seam at the join). */
+function buildHood(width){
+  const g = new THREE.Group();
+  const depth = 0.5, taper = 0.42, pyramidH = 0.3, trimH = 0.01, ductH = 0.29;
+  const topW = width*taper, topD = depth*taper;
+  const ductW = topW*0.8, ductD = topD*0.8;
+
+  const pyramid = cyl(taper, 1, pyramidH, STEEL_MAT, 4);
+  pyramid.rotation.y = Math.PI/4;
+  pyramid.scale.set(width/Math.SQRT2, 1, depth/Math.SQRT2);
+  pyramid.position.set(0, pyramidH/2, 0);
+  g.add(pyramid);
+
+  const trim = box(topW, trimH, topD, STEEL_DARK);
+  trim.position.set(0, pyramidH+trimH/2, 0);
+  g.add(trim);
+
+  const duct = box(ductW, ductH, ductD, STEEL_MAT);
+  duct.position.set(0, pyramidH+trimH+ductH/2, 0);
+  g.add(duct);
+
+  g.userData = {
+    type:'hood', label:'Campana', colorable:false, mdfMaterials:[],
+    widthRange:[0.6,0.9], width, baseY:1.5, dims:{w:width, h:pyramidH+trimH+ductH, d:depth}
+  };
+  return g;
+}
+
+let countertopMeshes = [];
+function counterMaterial(){
+  const m = new THREE.MeshStandardMaterial({ color:counterColorHex, roughness:0.25, metalness:0.08 });
+  return m;
+}
+function applyCounterColor(){
+  countertopMeshes.forEach(m=>{ m.material.color.setHex(counterColorHex); });
+}
+
+/* ---- Corner cabinet (esquinero) — two standard-depth runs meeting at 90° ---- */
+function buildCorner(size, mdfHex){
+  const g = new THREE.Group();
+  const half = size/2, armW = 0.6, kickH = 0.1, carH = 0.62, topH = 0.04;
+  const doorMats = [];
+  const carcassMat = mdfMaterial(mdfHex); doorMats.push(carcassMat);
+
+  // Carcass: with rotation 0 the two back edges (local x=-half, z=-half) sit
+  // flush against the two walls of a corner; the two front edges carry doors.
+  const armA = box(size, carH, armW, carcassMat);
+  armA.position.set(0, kickH+carH/2, -half+armW/2);
+  g.add(armA);
+  const armB = box(armW, carH, size, carcassMat);
+  armB.position.set(-half+armW/2, kickH+carH/2, 0);
+  g.add(armB);
+
+  const kickA = box(size-0.04, kickH, armW-0.05, KICK_MAT);
+  kickA.position.set(0, kickH/2, -half+armW/2-0.005);
+  g.add(kickA);
+  const kickB = box(armW-0.05, kickH, size-0.04, KICK_MAT);
+  kickB.position.set(-half+armW/2-0.005, kickH/2, 0);
+  g.add(kickB);
+
+  const doorLen = size - armW, doorH = carH-0.03, doorY = kickH+carH/2;
+  const doorAMat = mdfMaterial(mdfHex); doorMats.push(doorAMat);
+  const doorA = box(doorLen-0.01, doorH, MDF_THICKNESS, doorAMat);
+  doorA.position.set(-half+armW+doorLen/2, doorY, -half+armW+0.012);
+  g.add(doorA);
+  const handleA = box(0.02,0.14,0.02, HANDLE_MAT);
+  handleA.position.set(doorA.position.x+doorLen/2-0.06, doorY, doorA.position.z+0.02);
+  g.add(handleA);
+
+  const doorBMat = mdfMaterial(mdfHex); doorMats.push(doorBMat);
+  const doorB = box(MDF_THICKNESS, doorH, doorLen-0.01, doorBMat);
+  doorB.position.set(-half+armW+0.012, doorY, -half+armW+doorLen/2);
+  g.add(doorB);
+  const handleB = box(0.02,0.14,0.02, HANDLE_MAT);
+  handleB.position.set(doorB.position.x+0.02, doorY, doorB.position.z+doorLen/2-0.06);
+  g.add(handleB);
+
+  const topA = box(size+0.06, topH, armW+0.04, counterMaterial());
+  topA.position.set(0.02, kickH+carH+topH/2, -half+armW/2+0.01);
+  countertopMeshes.push(topA); g.add(topA);
+  const topB = box(armW+0.04, topH, size+0.06, counterMaterial());
+  topB.position.set(-half+armW/2+0.01, kickH+carH+topH/2+0.0008, 0.02); // tiny y-nudge avoids z-fighting where the two tops overlap
+  countertopMeshes.push(topB); g.add(topB);
+
+  g.userData = {
+    type:'corner', label:'Esquinero', colorable:true, mdfMaterials:doorMats,
+    widthRange:[0.75,1.15], width:size, baseY:0, dims:{w:size,h:kickH+carH+topH,d:size}
+  };
+  return g;
+}
+
+const BUILDERS = {
+  base:   (opts)=>buildBaseCabinet(opts.width ?? 0.6, opts.mdf ?? 0xF3F0E8),
+  wall:   (opts)=>buildWallCabinet(opts.width ?? 0.6, opts.mdf ?? 0xF3F0E8),
+  tower:  (opts)=>buildTower(opts.width ?? 0.6, opts.mdf ?? 0xF3F0E8),
+  corner: (opts)=>buildCorner(opts.width ?? 0.9, opts.mdf ?? 0xF3F0E8),
+  sink:   ()=>buildSink(),
+  faucet: ()=>buildFaucet(),
+  fridge: ()=>buildFridge(),
+  hood:   (opts)=>buildHood(opts.width ?? 0.6),
+};
+
+/* ============================================================
+   PLACEMENT / SELECTION / DRAG
+============================================================ */
+/* Clamps a candidate (x,z) so a w×d footprint rotated by ry stays inside the
+   room's floor extents (flush against a wall at most, never through it). */
+function clampPosToRoom(x, z, ry, dims){
+  const hw = dims.w/2, hd = dims.d/2;
+  const effHalfW = Math.abs(Math.cos(ry))*hw + Math.abs(Math.sin(ry))*hd;
+  const effHalfD = Math.abs(Math.sin(ry))*hw + Math.abs(Math.cos(ry))*hd;
+  const maxX = Math.max(0, room.width/2 - effHalfW);
+  const maxZ = Math.max(0, room.depth/2 - effHalfD);
+  return { x: Math.min(maxX, Math.max(-maxX, x)), z: Math.min(maxZ, Math.max(-maxZ, z)) };
+}
+function clampToRoom(obj){
+  const dims = obj.userData?.dims;
+  if(!dims) return;
+  const p = clampPosToRoom(obj.position.x, obj.position.z, obj.rotation.y, dims);
+  obj.position.x = p.x; obj.position.z = p.z;
+}
+
+/* ---- Furniture-vs-furniture collision (2D oriented boxes + vertical range) ---- */
+// `dims.w/d` are each module's outer footprint, already inclusive of its own
+// 18mm (MDF_THICKNESS) side panels — see the note on MDF_THICKNESS above.
+// So blocking any overlap here (down to a hairline numeric tolerance, well
+// under 18mm) is exactly what keeps modules from being placed pressed into
+// one another, which is what makes the on-screen positions trustworthy for
+// pulling real cut measurements afterwards.
+function footprintOf(obj, x=obj.position.x, z=obj.position.z, ry=obj.rotation.y){
+  const d = obj.userData.dims;
+  return { x, z, ry, hw:d.w/2, hd:d.d/2, yMin:obj.userData.baseY, yMax:obj.userData.baseY + d.h };
+}
+function verticalOverlap(a, b){
+  const eps = 0.015; // pieces resting flush on one another (counter/sink, cabinet/alacena) don't "collide"
+  return a.yMin < b.yMax - eps && b.yMin < a.yMax - eps;
+}
+function obbOverlap(a, b){
+  const axes = [
+    { x:Math.cos(a.ry), z:Math.sin(a.ry) }, { x:-Math.sin(a.ry), z:Math.cos(a.ry) },
+    { x:Math.cos(b.ry), z:Math.sin(b.ry) }, { x:-Math.sin(b.ry), z:Math.cos(b.ry) },
+  ];
+  const dx = b.x - a.x, dz = b.z - a.z;
+  for(const ax of axes){
+    const dist = Math.abs(dx*ax.x + dz*ax.z);
+    const ra = a.hw*Math.abs(Math.cos(a.ry)*ax.x + Math.sin(a.ry)*ax.z) + a.hd*Math.abs(-Math.sin(a.ry)*ax.x + Math.cos(a.ry)*ax.z);
+    const rb = b.hw*Math.abs(Math.cos(b.ry)*ax.x + Math.sin(b.ry)*ax.z) + b.hd*Math.abs(-Math.sin(b.ry)*ax.x + Math.cos(b.ry)*ax.z);
+    if(dist > ra + rb - 0.005) return false; // small tolerance so flush edges don't jitter
+  }
+  return true;
+}
+// Small fixtures mounted right at another piece's edge (e.g. a faucet against a sink)
+// are excluded from mutual collision — only furniture-scale pieces bump each other.
+const COLLIDES_WITH_FURNITURE = new Set(['base','wall','tower','sink','fridge','corner','hood']);
+function collidesAt(obj, x, z){
+  if(!COLLIDES_WITH_FURNITURE.has(obj.userData.type)) return false;
+  const a = footprintOf(obj, x, z, obj.rotation.y);
+  for(const other of placedObjects){
+    if(other === obj) continue;
+    if(!COLLIDES_WITH_FURNITURE.has(other.userData.type)) continue;
+    const b = footprintOf(other);
+    if(!verticalOverlap(a, b)) continue;
+    if(obbOverlap(a, b)) return true;
+  }
+  return false;
+}
+
+function spawnObject(type, opts={}){
+  const built = BUILDERS[type](opts);
+  built.userData.id = idCounter++;
+  built.userData.isPlaced = true;
+  built.position.set(opts.x ?? 0, built.userData.baseY, opts.z ?? 0);
+  built.rotation.y = opts.ry ?? 0;
+  clampToRoom(built);
+  built.traverse(o=>{ if(o.isMesh){ o.castShadow = built.userData.type!=='sink'; o.receiveShadow = true; } });
+  scene.add(built);
+  placedObjects.push(built);
+  return built;
+}
+
+function removeObject(obj){
+  const i = placedObjects.indexOf(obj);
+  if(i>=0) placedObjects.splice(i,1);
+  countertopMeshes = countertopMeshes.filter(m=>{
+    let keep = true;
+    obj.traverse(o=>{ if(o===m) keep=false; });
+    return keep;
+  });
+  scene.remove(obj);
+  obj.traverse(o=>{
+    if(o.geometry) o.geometry.dispose();
+  });
+  if(selected === obj){ select(null); }
+}
+
+let selectBox = null;
+function select(obj){
+  selected = obj;
+  if(selectBox){ scene.remove(selectBox); selectBox=null; }
+  if(obj){
+    selectBox = new THREE.BoxHelper(obj, 0xffcf5c);
+    selectBox.material.linewidth = 2;
+    scene.add(selectBox);
+  }
+  renderProps();
+}
+
+/* Raycasting */
+const raycaster = new THREE.Raycaster();
+const pointerNDC = new THREE.Vector2();
+const dragPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0);
+const dragPoint = new THREE.Vector3();
+let dragOffset = new THREE.Vector3();
+let isDragging = false;
+let pointerDownPos = null;
+
+function findRoot(obj){
+  let o = obj;
+  while(o && !o.userData?.isPlaced) o = o.parent;
+  return o;
+}
+function setPointerNDC(ev){
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((ev.clientX-rect.left)/rect.width)*2-1;
+  pointerNDC.y = -((ev.clientY-rect.top)/rect.height)*2+1;
+}
+
+renderer.domElement.addEventListener('pointerdown', (ev)=>{
+  setPointerNDC(ev);
+  pointerDownPos = {x:ev.clientX, y:ev.clientY};
+  raycaster.setFromCamera(pointerNDC, camera);
+  const hits = raycaster.intersectObjects(placedObjects, true);
+  if(hits.length){
+    const root = findRoot(hits[0].object);
+    select(root);
+    dragPlane.set(new THREE.Vector3(0,1,0), -root.userData.baseY);
+    raycaster.ray.intersectPlane(dragPlane, dragPoint);
+    dragOffset.copy(root.position).sub(dragPoint);
+    isDragging = true;
+    controls.enabled = false;
+  } else {
+    select(null);
+  }
+});
+window.addEventListener('pointermove', (ev)=>{
+  if(!isDragging || !selected) return;
+  setPointerNDC(ev);
+  raycaster.setFromCamera(pointerNDC, camera);
+  if(raycaster.ray.intersectPlane(dragPlane, dragPoint)){
+    let nx = dragPoint.x + dragOffset.x;
+    let nz = dragPoint.z + dragOffset.z;
+    if(room.snap){ nx = Math.round(nx/0.05)*0.05; nz = Math.round(nz/0.05)*0.05; }
+    const dims = selected.userData.dims, ry = selected.rotation.y;
+    const clamped = clampPosToRoom(nx, nz, ry, dims);
+    const oldX = selected.position.x, oldZ = selected.position.z;
+
+    // Resolve X and Z independently so the piece slides along whatever it bumps into,
+    // instead of being blocked outright or popping through it.
+    const cx = clampPosToRoom(clamped.x, oldZ, ry, dims).x;
+    selected.position.x = collidesAt(selected, cx, oldZ) ? oldX : cx;
+
+    const cz = clampPosToRoom(selected.position.x, clamped.z, ry, dims).z;
+    selected.position.z = collidesAt(selected, selected.position.x, cz) ? oldZ : cz;
+
+    if(selectBox) selectBox.update();
+    updatePropsCoords();
+  }
+});
+window.addEventListener('pointerup', ()=>{
+  if(isDragging){ isDragging = false; controls.enabled = true; }
+});
+
+window.addEventListener('keydown', (ev)=>{
+  if(!selected) return;
+  const tag = document.activeElement?.tagName;
+  if(tag==='INPUT' || tag==='TEXTAREA') return;
+  if(ev.key==='q' || ev.key==='Q'){ rotateSelected(-15); }
+  if(ev.key==='e' || ev.key==='E'){ rotateSelected(15); }
+  if(ev.key==='Delete' || ev.key==='Backspace'){ ev.preventDefault(); removeObject(selected); }
+});
+
+function rotateSelected(deg){
+  if(!selected) return;
+  selected.rotation.y += deg*Math.PI/180;
+  clampToRoom(selected);
+  if(selectBox) selectBox.update();
+  updatePropsCoords();
+}
+
+/* ============================================================
+   ANIMATION LOOP
+============================================================ */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  controls.update();
+  if(selectBox && !isDragging) selectBox.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   CAMERA PRESETS
+============================================================ */
+let camTween = null;
+function tweenCamera(pos, target, duration=650){
+  if(camTween) cancelAnimationFrame(camTween.raf);
+  const startPos = camera.position.clone();
+  const startTarget = controls.target.clone();
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(reduce){ camera.position.copy(pos); controls.target.copy(target); controls.update(); return; }
+  const t0 = performance.now();
+  controls.enabled = false;
+  function step(now){
+    const t = Math.min(1, (now-t0)/duration);
+    const e = t<0.5 ? 2*t*t : 1-Math.pow(-2*t+2,2)/2;
+    camera.position.lerpVectors(startPos, pos, e);
+    controls.target.lerpVectors(startTarget, target, e);
+    controls.update();
+    if(t<1){ camTween.raf = requestAnimationFrame(step); } else { controls.enabled = true; }
+  }
+  camTween = { raf: requestAnimationFrame(step) };
+}
+document.querySelectorAll('.view-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('.view-btn').forEach(b=>b.classList.remove('on'));
+    btn.classList.add('on');
+    const w=room.width, d=room.depth, h=room.height;
+    if(btn.dataset.view==='iso') tweenCamera(new THREE.Vector3(w*0.85, h*1.15, d*1.05), new THREE.Vector3(0,h*0.4,0));
+    if(btn.dataset.view==='top') tweenCamera(new THREE.Vector3(0.001, Math.max(w,d)*1.15, 0.001), new THREE.Vector3(0,0,0));
+    if(btn.dataset.view==='front') tweenCamera(new THREE.Vector3(0, h*0.55, d*1.35), new THREE.Vector3(0,h*0.4,0));
+  });
+});
+document.getElementById('btn-shot').addEventListener('click', ()=>{
+  renderer.render(scene, camera);
+  const url = renderer.domElement.toDataURL('image/png');
+  window.open(url, '_blank');
+});
+
+/* ============================================================
+   UI: ROOM CONTROLS
+============================================================ */
+function bindRange(id, valId, fmt, onInput){
+  const el = document.getElementById(id), out = document.getElementById(valId);
+  el.addEventListener('input', ()=>{ out.textContent = fmt(+el.value); onInput(+el.value); });
+}
+bindRange('in-width','val-width', v=>`${v} cm`, v=>{ room.width=v/100; rebuildRoom(); });
+bindRange('in-depth','val-depth', v=>`${v} cm`, v=>{ room.depth=v/100; rebuildRoom(); });
+bindRange('in-height','val-height', v=>`${v} cm`, v=>{ room.height=v/100; rebuildRoom(); });
+
+document.getElementById('wall-toggles').addEventListener('click', (ev)=>{
+  const chip = ev.target.closest('.chip'); if(!chip) return;
+  const key = chip.dataset.wall;
+  room.walls[key] = !room.walls[key];
+  chip.classList.toggle('on', room.walls[key]);
+  rebuildRoom();
+});
+
+function buildSwatchRow(containerId, list, currentGetter, onPick){
+  const row = document.getElementById(containerId);
+  row.innerHTML = '';
+  list.forEach(item=>{
+    const sw = document.createElement('div');
+    sw.className = 'swatch' + (currentGetter()===item.hex ? ' on' : '') + (currentGetter && item.key && currentGetter()===item.key ? ' on':'');
+    sw.style.background = '#'+ new THREE.Color(item.hex ?? 0xffffff).getHexString();
+    sw.title = item.label;
+    sw.addEventListener('click', ()=>{ onPick(item); [...row.children].forEach(c=>c.classList.remove('on')); sw.classList.add('on'); });
+    row.appendChild(sw);
+  });
+}
+buildSwatchRow('wall-colors', WALL_COLORS, ()=>wallColorHex, (item)=>{
+  wallColorHex = item.hex; wallMat.color.setHex(item.hex);
+});
+buildSwatchRow('counter-swatches', COUNTER_COLORS, ()=>counterColorHex, (item)=>{
+  counterColorHex = item.hex; applyCounterColor();
+});
+// floor uses keys, custom row
+(function buildFloorRow(){
+  const row = document.getElementById('floor-swatches');
+  Object.entries(FLOOR_PRESETS).forEach(([key, preset])=>{
+    const sw = document.createElement('div');
+    sw.className = 'swatch' + (key===floorPresetKey ? ' on':'');
+    const previewColor = key.includes('oak') ? '#c9a374' : key.includes('walnut') ? '#5a3826' : key.includes('White') ? '#eeece6' : key.includes('Grey')||key.includes('tileGrey') ? '#a9aca9' : '#9a958a';
+    sw.style.background = previewColor;
+    sw.title = preset.label;
+    sw.addEventListener('click', ()=>{
+      floorPresetKey = key; rebuildRoom();
+      [...row.children].forEach(c=>c.classList.remove('on')); sw.classList.add('on');
+    });
+    row.appendChild(sw);
+  });
+})();
+
+document.getElementById('snap-toggle').addEventListener('click', function(){
+  room.snap = !room.snap;
+  this.classList.toggle('on', room.snap);
+});
+
+document.querySelectorAll('.section-head').forEach(h=>{
+  h.addEventListener('click', ()=> h.parentElement.classList.toggle('collapsed'));
+});
+
+/* ============================================================
+   UI: CATALOG
+============================================================ */
+const ICONS = {
+  base: `<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><rect x="5" y="12" width="24" height="15" rx="1" stroke="currentColor" stroke-width="1.4"/><line x1="17" y1="12" x2="17" y2="27" stroke="currentColor" stroke-width="1.2"/><line x1="4" y1="12" x2="30" y2="12" stroke="currentColor" stroke-width="1.6"/><circle cx="14" cy="19" r="0.9" fill="currentColor"/><circle cx="20" cy="19" r="0.9" fill="currentColor"/></svg>`,
+  wall: `<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><rect x="5" y="9" width="24" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/><line x1="17" y1="9" x2="17" y2="21" stroke="currentColor" stroke-width="1.2"/><line x1="4" y1="24" x2="30" y2="24" stroke-dasharray="2 2" stroke="currentColor" stroke-width="1"/><circle cx="14" cy="15" r="0.9" fill="currentColor"/><circle cx="20" cy="15" r="0.9" fill="currentColor"/></svg>`,
+  tower:`<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><rect x="11" y="5" width="12" height="24" rx="1" stroke="currentColor" stroke-width="1.4"/><line x1="11" y1="17" x2="23" y2="17" stroke="currentColor" stroke-width="1.2"/><circle cx="14.5" cy="11" r="0.8" fill="currentColor"/><circle cx="14.5" cy="23" r="0.8" fill="currentColor"/></svg>`,
+  sink: `<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><rect x="5" y="11" width="24" height="13" rx="3" stroke="currentColor" stroke-width="1.4"/><rect x="9" y="14" width="16" height="7" rx="2" stroke="currentColor" stroke-width="1.2"/><circle cx="17" cy="17.5" r="0.9" fill="currentColor"/></svg>`,
+  faucet:`<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><path d="M13 27V13c0-2 1.5-4 4-4h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="13" cy="27" r="1.3" fill="currentColor"/><circle cx="23" cy="9" r="1.5" stroke="currentColor" stroke-width="1.3"/></svg>`,
+  fridge:`<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><rect x="10" y="4" width="14" height="26" rx="1.5" stroke="currentColor" stroke-width="1.4"/><line x1="10" y1="12" x2="24" y2="12" stroke="currentColor" stroke-width="1.2"/><line x1="20" y1="6" x2="20" y2="9.5" stroke="currentColor" stroke-width="1.3"/><line x1="20" y1="14" x2="20" y2="19" stroke="currentColor" stroke-width="1.3"/></svg>`,
+  corner:`<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><path d="M5 5H27V15H15V29H5V5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M15 15L27 15" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/><circle cx="22" cy="10" r="0.9" fill="currentColor"/><circle cx="10" cy="23" r="0.9" fill="currentColor"/></svg>`,
+  hood: `<svg width="34" height="34" viewBox="0 0 34 34" fill="none"><path d="M14 4H20V9H14V4Z" stroke="currentColor" stroke-width="1.4"/><path d="M6 9H28L24 20H10L6 9Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><line x1="11" y1="13.5" x2="23" y2="13.5" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/><circle cx="17" cy="17" r="0.9" fill="currentColor"/></svg>`,
+};
+const CATALOG = [
+  { type:'base', name:'Bajo mesada', dims:'60 × 60 × 76 cm', defaultWidth:0.6 },
+  { type:'wall', name:'Alacena', dims:'60 × 33 × 70 cm', defaultWidth:0.6 },
+  { type:'tower', name:'Columna', dims:'60 × 60 × 200 cm', defaultWidth:0.6 },
+  { type:'corner', name:'Esquinero', dims:'90 × 90 × 76 cm', defaultWidth:0.9 },
+  { type:'sink', name:'Bacha', dims:'56 × 46 cm', defaultWidth:0.6 },
+  { type:'faucet', name:'Grifo', dims:'monocomando', defaultWidth:0.6 },
+  { type:'fridge', name:'Heladera', dims:'70 × 65 × 180 cm', defaultWidth:0.6 },
+  { type:'hood', name:'Campana', dims:'60 × 50 × 60 cm', defaultWidth:0.6 },
+];
+const catalogEl = document.getElementById('catalog');
+CATALOG.forEach(item=>{
+  const card = document.createElement('button');
+  card.className = 'catalog-card';
+  card.innerHTML = `${ICONS[item.type]}<div class="name">${item.name}</div><div class="dims mono">${item.dims}</div>`;
+  card.addEventListener('click', ()=>{
+    const spread = placedObjects.length * 0.12 % 1.4 - 0.7;
+    const obj = spawnObject(item.type, { width:item.defaultWidth, mdf:0xF3F0E8, x: spread, z: 0.3, ry:0 });
+    select(obj);
+  });
+  catalogEl.appendChild(card);
+});
+
+/* ============================================================
+   PROPERTIES PANEL
+============================================================ */
+const propsBody = document.getElementById('props-body');
+function renderProps(){
+  if(!selected){
+    propsBody.innerHTML = `<div class="empty-hint" id="props-empty">Hacé clic en un módulo del catálogo para agregarlo, o clic sobre una pieza ya ubicada para editarla.</div>`;
+    return;
+  }
+  const ud = selected.userData;
+  let html = `<div class="prop-title"><h3 style="font-size:14px;font-weight:700;">${ud.label}</h3></div>`;
+
+  html += `<div class="coord-grid">
+    <div class="coord-box"><label>Posición X</label><div class="v mono" id="pv-x">${Math.round(selected.position.x*100)} cm</div></div>
+    <div class="coord-box"><label>Posición Z</label><div class="v mono" id="pv-z">${Math.round(selected.position.z*100)} cm</div></div>
+  </div>`;
+
+  if(ud.widthRange){
+    const [min,max] = ud.widthRange;
+    html += `<div class="field">
+      <div class="field-label"><span>Ancho</span><span class="val mono" id="pv-width">${Math.round(ud.width*100)} cm</span></div>
+      <input type="range" id="in-obj-width" min="${Math.round(min*100)}" max="${Math.round(max*100)}" step="5" value="${Math.round(ud.width*100)}">
+    </div>`;
+  }
+
+  html += `<div class="field">
+    <div class="field-label"><span>Rotación</span><span class="val mono" id="pv-rot">${Math.round((selected.rotation.y*180/Math.PI+360)%360)}°</span></div>
+    <input type="range" id="in-obj-rot" min="0" max="355" step="5" value="${Math.round((selected.rotation.y*180/Math.PI+360)%360)}">
+    <div class="btn-row" style="margin-top:6px;">
+      <button class="btn" id="btn-rot-l">⟲ 15°</button>
+      <button class="btn" id="btn-rot-r">⟳ 15°</button>
+      <button class="btn" id="btn-rot-90">90°</button>
+    </div>
+  </div>`;
+
+  if(ud.colorable){
+    html += `<div class="field"><div class="field-label"><span>Color MDF</span></div><div class="swatch-row" id="obj-mdf-colors"></div></div>`;
+  }
+
+  html += `<button class="btn danger block" id="btn-delete">Eliminar pieza</button>`;
+
+  propsBody.innerHTML = html;
+
+  document.getElementById('btn-delete').addEventListener('click', ()=> removeObject(selected));
+  document.getElementById('btn-rot-l').addEventListener('click', ()=> rotateSelected(-15));
+  document.getElementById('btn-rot-r').addEventListener('click', ()=> rotateSelected(15));
+  document.getElementById('btn-rot-90').addEventListener('click', ()=> rotateSelected(90));
+
+  const rotIn = document.getElementById('in-obj-rot');
+  rotIn.addEventListener('input', ()=>{
+    selected.rotation.y = (+rotIn.value)*Math.PI/180;
+    clampToRoom(selected);
+    document.getElementById('pv-rot').textContent = `${rotIn.value}°`;
+    if(selectBox) selectBox.update();
+    updatePropsCoords();
+  });
+
+  if(ud.widthRange){
+    const wIn = document.getElementById('in-obj-width');
+    wIn.addEventListener('input', ()=>{
+      const newWidthCm = +wIn.value;
+      document.getElementById('pv-width').textContent = `${newWidthCm} cm`;
+    });
+    wIn.addEventListener('change', ()=>{
+      const newWidth = (+wIn.value)/100;
+      const currentColor = ud.mdfMaterials[0]?.color.getHex() ?? 0xF3F0E8;
+      const pos = selected.position.clone();
+      const ry = selected.rotation.y;
+      removeObject(selected);
+      const obj = spawnObject(ud.type, { width:newWidth, mdf:currentColor, x:pos.x, z:pos.z, ry });
+      select(obj);
+    });
+  }
+
+  if(ud.colorable){
+    const row = document.getElementById('obj-mdf-colors');
+    const current = ud.mdfMaterials[0]?.color.getHex();
+    MDF_COLORS.forEach(item=>{
+      const sw = document.createElement('div');
+      sw.className = 'swatch' + (current===item.hex ? ' on':'');
+      sw.style.background = '#'+new THREE.Color(item.hex).getHexString();
+      sw.title = item.label;
+      sw.addEventListener('click', ()=>{
+        ud.mdfMaterials.forEach(m=> m.color.setHex(item.hex));
+        [...row.children].forEach(c=>c.classList.remove('on'));
+        sw.classList.add('on');
+      });
+      row.appendChild(sw);
+    });
+  }
+}
+function updatePropsCoords(){
+  if(!selected) return;
+  const xEl = document.getElementById('pv-x'), zEl = document.getElementById('pv-z');
+  if(xEl) xEl.textContent = `${Math.round(selected.position.x*100)} cm`;
+  if(zEl) zEl.textContent = `${Math.round(selected.position.z*100)} cm`;
+  const rotEl = document.getElementById('pv-rot'), rotIn = document.getElementById('in-obj-rot');
+  if(rotEl){ const deg = Math.round((selected.rotation.y*180/Math.PI+360)%360); rotEl.textContent = `${deg}°`; if(rotIn) rotIn.value = deg; }
+}
+
+/* ============================================================
+   MOBILE SIDEBAR
+============================================================ */
+document.getElementById('sidebar-toggle').addEventListener('click', ()=>{
+  document.getElementById('sidebar').classList.toggle('open');
+});
+
+/* ============================================================
+   RESIZE
+============================================================ */
+window.addEventListener('resize', ()=>{
+  camera.aspect = host.clientWidth/host.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(host.clientWidth, host.clientHeight);
+});
+
+/* ============================================================
+   DEMO KITCHEN SEED
+============================================================ */
+function seedDemoKitchen(){
+  const backZ = -room.depth/2 + 0.3;
+  const mdf = 0xF3F0E8;
+
+  const c1 = spawnObject('base', { width:0.6, mdf, x:-1.1, z:backZ, ry:0 });
+  const c2 = spawnObject('base', { width:0.8, mdf, x:-0.4, z:backZ, ry:0 });
+  const c3 = spawnObject('base', { width:0.6, mdf, x:0.4, z:backZ, ry:0 });
+  spawnObject('sink', { x:-0.4, z:backZ+0.02, ry:0 });
+  spawnObject('faucet', { x:-0.4, z:backZ-0.14, ry:0 });
+
+  spawnObject('wall', { width:0.6, mdf, x:-1.1, z:backZ, ry:0 });
+  spawnObject('wall', { width:0.6, mdf, x:0.4, z:backZ, ry:0 });
+
+  spawnObject('tower', { width:0.6, mdf, x:1.05, z:backZ, ry:0 });
+  spawnObject('fridge', { x:-room.width/2+0.4, z:-0.2, ry:Math.PI/2 });
+
+  select(null);
+}
+
+rebuildRoom();
+seedDemoKitchen();
