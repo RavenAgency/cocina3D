@@ -117,7 +117,31 @@
       <span><kbd>Q</kbd>/<kbd>E</kbd> rotar</span>
       <span><kbd>Supr</kbd> eliminar</span>
     </div>
+    <div class="mobile-zoom">
+      <button class="mobile-zoom-btn" id="zoom-in-btn" aria-label="Acercar">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/><line x1="12.7" y1="12.7" x2="17" y2="17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="6" y1="8.5" x2="11" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><line x1="8.5" y1="6" x2="8.5" y2="11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </button>
+      <button class="mobile-zoom-btn" id="zoom-out-btn" aria-label="Alejar">
+        <svg width="17" height="17" viewBox="0 0 20 20" fill="none"><circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/><line x1="12.7" y1="12.7" x2="17" y2="17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><line x1="6" y1="8.5" x2="11" y2="8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      </button>
+    </div>
     <div class="room-readout" id="room-readout">360 × 300 × 260 cm</div>
+
+    <div class="cam-pad" id="cam-pad">
+      <button class="cam-pad-btn cam-pad-up" data-dir="up" aria-label="Inclinar arriba">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 8.5L7 4.5L11 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="cam-pad-btn cam-pad-down" data-dir="down" aria-label="Inclinar abajo">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 5.5L7 9.5L11 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="cam-pad-btn cam-pad-left" data-dir="left" aria-label="Girar izquierda">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M8.5 3L4.5 7L8.5 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="cam-pad-btn cam-pad-right" data-dir="right" aria-label="Girar derecha">
+        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5.5 3L9.5 7L5.5 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="cam-pad-center" id="cam-pad-center" aria-label="Vista inicial"></button>
+    </div>
   </main>
 </div>
 

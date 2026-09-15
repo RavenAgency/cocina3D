@@ -51,6 +51,36 @@ controls.maxDistance = 16;
 controls.target.set(0, 1.0, 0);
 controls.update();
 
+// Mobile camera D-pad state — read every animation frame (see MOBILE CAMERA D-PAD
+// section below for the button + center-knob wiring); declared up here, before the
+// render loop first runs, so it's never undefined when animate() reads it.
+// camPadVec.x/y each range -1..1: the arrow buttons snap it to a unit direction,
+// the draggable center knob feeds it a continuous (analog) direction instead.
+const camPadVec = { x:0, y:0 };
+function setCamPadVec(x, y){ camPadVec.x = x; camPadVec.y = y; }
+let camPadZoomDir = null; // 'in' | 'out' | null
+const CAM_PAD_ROTATE_SPEED = 1.4; // rad/s
+const CAM_PAD_ZOOM_SPEED = 1.6; // distance multiplier per second
+function applyCamPadRotation(dt){
+  if(camPadVec.x===0 && camPadVec.y===0) return;
+  const offset = camera.position.clone().sub(controls.target);
+  const spherical = new THREE.Spherical().setFromVector3(offset);
+  spherical.theta -= camPadVec.x * CAM_PAD_ROTATE_SPEED * dt;
+  spherical.phi += camPadVec.y * CAM_PAD_ROTATE_SPEED * dt;
+  spherical.phi = Math.max(0.15, Math.min(controls.maxPolarAngle-0.02, spherical.phi));
+  offset.setFromSpherical(spherical);
+  camera.position.copy(controls.target).add(offset);
+  camera.lookAt(controls.target);
+}
+function applyCamPadZoom(dt){
+  if(!camPadZoomDir) return;
+  const offset = camera.position.clone().sub(controls.target);
+  const factor = Math.pow(camPadZoomDir==='in' ? 1/CAM_PAD_ZOOM_SPEED : CAM_PAD_ZOOM_SPEED, dt);
+  const dist = Math.max(controls.minDistance, Math.min(controls.maxDistance, offset.length()*factor));
+  offset.setLength(dist);
+  camera.position.copy(controls.target).add(offset);
+}
+
 // Lighting
 scene.add(new THREE.HemisphereLight(0xdfe6f0, 0x2a2620, 0.55));
 const key = new THREE.DirectionalLight(0xfff2df, 2.1);
@@ -733,6 +763,9 @@ function rotateSelected(deg){
 const clock = new THREE.Clock();
 function animate(){
   requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  applyCamPadRotation(dt);
+  applyCamPadZoom(dt);
   controls.update();
   if(selectBox && !isDragging) selectBox.update();
   renderer.render(scene, camera);
@@ -981,6 +1014,81 @@ function updatePropsCoords(){
 ============================================================ */
 document.getElementById('sidebar-toggle').addEventListener('click', ()=>{
   document.getElementById('sidebar').classList.toggle('open');
+});
+
+/* ============================================================
+   MOBILE CAMERA D-PAD
+============================================================ */
+// Press-and-hold an arrow: snaps camPadVec to a unit direction, read every frame by
+// applyCamPadRotation (declared up in RENDERER / SCENE / CAMERA). Release
+// (pointerup/leave/cancel) always stops it — mirrors how OrbitControls itself only
+// rotates while the pointer is actually down.
+const camPad = document.getElementById('cam-pad');
+const DIR_VECS = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+if(camPad){
+  camPad.querySelectorAll('.cam-pad-btn').forEach(btn=>{
+    const [vx, vy] = DIR_VECS[btn.dataset.dir];
+    const start = (ev)=>{ ev.preventDefault(); setCamPadVec(vx, vy); controls.enabled = false; };
+    const stop = ()=>{ setCamPadVec(0, 0); controls.enabled = true; };
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+  });
+
+  // Center knob: doubles as a draggable mini-joystick and a tap-to-reset button.
+  // A short drag (past a small threshold) feeds an analog direction into
+  // camPadVec, same as holding an arrow; the knob follows the finger, clamped to
+  // a max radius, and springs back to center on release. A release with no real
+  // drag is treated as a tap and resets to the default perspective view.
+  const centerBtn = document.getElementById('cam-pad-center');
+  const KNOB_MAX_OFFSET = 30; // px
+  const KNOB_TAP_THRESHOLD = 5; // px
+  let knobDragging = false, knobMoved = false, knobStart = null;
+
+  function setKnobOffset(dx, dy){
+    centerBtn.style.transform = `translate(-50%,-50%) translate(${dx}px, ${dy}px)`;
+  }
+  centerBtn.addEventListener('pointerdown', (ev)=>{
+    ev.preventDefault();
+    knobDragging = true; knobMoved = false;
+    knobStart = { x: ev.clientX, y: ev.clientY };
+    centerBtn.style.transition = 'none';
+    centerBtn.setPointerCapture(ev.pointerId);
+    controls.enabled = false;
+  });
+  centerBtn.addEventListener('pointermove', (ev)=>{
+    if(!knobDragging) return;
+    const dx = ev.clientX - knobStart.x, dy = ev.clientY - knobStart.y;
+    const dist = Math.hypot(dx, dy);
+    if(dist > KNOB_TAP_THRESHOLD) knobMoved = true;
+    const clamped = Math.min(dist, KNOB_MAX_OFFSET);
+    const ang = Math.atan2(dy, dx);
+    const ox = Math.cos(ang)*clamped, oy = Math.sin(ang)*clamped;
+    setKnobOffset(ox, oy);
+    setCamPadVec(ox/KNOB_MAX_OFFSET, oy/KNOB_MAX_OFFSET);
+  });
+  const endKnobDrag = ()=>{
+    if(!knobDragging) return;
+    knobDragging = false;
+    setCamPadVec(0, 0);
+    controls.enabled = true;
+    centerBtn.style.transition = 'transform .18s ease';
+    setKnobOffset(0, 0);
+    if(!knobMoved) document.querySelector('.view-btn[data-view="iso"]').click();
+  };
+  centerBtn.addEventListener('pointerup', endKnobDrag);
+  centerBtn.addEventListener('pointercancel', endKnobDrag);
+}
+[['zoom-in-btn','in'], ['zoom-out-btn','out']].forEach(([id, dir])=>{
+  const btn = document.getElementById(id);
+  if(!btn) return;
+  const start = (ev)=>{ ev.preventDefault(); camPadZoomDir = dir; };
+  const stop = ()=>{ camPadZoomDir = null; };
+  btn.addEventListener('pointerdown', start);
+  btn.addEventListener('pointerup', stop);
+  btn.addEventListener('pointerleave', stop);
+  btn.addEventListener('pointercancel', stop);
 });
 
 /* ============================================================
