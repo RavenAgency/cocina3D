@@ -232,6 +232,8 @@
   .ghost-btn:hover{border-color:var(--accent);}
 
   #sidebar-toggle{ display:none; }
+  #sidebar-backdrop{ display:none; }
+  #sidebar-close-tab{ display:none; }
 
   .stage-hint{
     position:absolute; left:16px; bottom:16px; z-index:10;
@@ -299,11 +301,30 @@
     }
     #sidebar.open{transform:translateX(0);}
     #sidebar-toggle{
-      display:flex; position:absolute; top:16px; left:16px; z-index:15;
+      display:flex; position:absolute; top:16px; left:16px; z-index:21;
       background:rgba(35,38,40,.85); border:1px solid rgba(255,255,255,.08); color:var(--stage-ink);
       width:38px; height:38px; border-radius:10px; align-items:center; justify-content:center;
       cursor:pointer; box-shadow:var(--shadow);
     }
+    /* Once open, the corner button steps aside for the close tab below — one
+       obvious close control, attached to the panel it closes, beats two. */
+    #sidebar.open ~ #stage-wrap #sidebar-toggle{ display:none; }
+    /* Close tab — a handle on the sidebar's own right edge, vertically centered on
+       screen, so it reads as "grab here to collapse this panel" (same idiom as a
+       code editor's sidebar-collapse chevron) rather than an unrelated floating
+       button. Lives inside #sidebar so it slides off with it. */
+    #sidebar-close-tab{
+      display:flex; position:absolute; top:50%; right:0; transform:translateY(-50%);
+      z-index:21; width:26px; height:64px; padding:0;
+      border-radius:12px 0 0 12px; border:1px solid rgba(255,255,255,.12); border-right:none;
+      background:rgba(35,38,40,.92); color:var(--stage-ink);
+      align-items:center; justify-content:center; cursor:pointer; box-shadow:var(--shadow);
+    }
+    /* Dimmed tap-anywhere-to-close backdrop, shown only while the sidebar is open. */
+    #sidebar-backdrop{
+      position:fixed; inset:0; z-index:19; background:rgba(15,14,11,.4);
+    }
+    #sidebar.open ~ #stage-wrap #sidebar-backdrop{ display:block; }
     .stage-topbar{ left:64px; }
     .stage-hint{ display:none; }
     .cam-pad{ display:block; right:16px; bottom:16px; }

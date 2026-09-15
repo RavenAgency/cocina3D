@@ -1012,9 +1012,17 @@ function updatePropsCoords(){
 /* ============================================================
    MOBILE SIDEBAR
 ============================================================ */
-document.getElementById('sidebar-toggle').addEventListener('click', ()=>{
-  document.getElementById('sidebar').classList.toggle('open');
-});
+// Closing has to be as cheap as opening. Two ways, both obvious: the close tab
+// riding on the sidebar's own right edge (see #sidebar-close-tab in style.css —
+// it moves with the panel since it's a child of #sidebar), and the dimmed
+// backdrop closing it from a tap anywhere else on screen.
+const sidebarEl = document.getElementById('sidebar');
+function setSidebarOpen(open){
+  sidebarEl.classList.toggle('open', open);
+}
+document.getElementById('sidebar-toggle').addEventListener('click', ()=> setSidebarOpen(!sidebarEl.classList.contains('open')));
+document.getElementById('sidebar-close-tab').addEventListener('click', ()=> setSidebarOpen(false));
+document.getElementById('sidebar-backdrop').addEventListener('click', ()=> setSidebarOpen(false));
 
 /* ============================================================
    MOBILE CAMERA D-PAD
