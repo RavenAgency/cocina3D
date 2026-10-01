@@ -637,6 +637,34 @@ function obbOverlap(a, b){
   }
   return true;
 }
+// Binary-search the furthest reachable point along a safe->colliding segment, so a piece
+// lands flush against whatever it hit instead of stopping short with a gap.
+function slideToContact(obj, safeX, safeZ, hitX, hitZ){
+  let loX = safeX, loZ = safeZ, hiX = hitX, hiZ = hitZ;
+  for(let i=0;i<24;i++){
+    const midX = (loX+hiX)/2, midZ = (loZ+hiZ)/2;
+    if(collidesAt(obj, midX, midZ)){ hiX = midX; hiZ = midZ; }
+    else { loX = midX; loZ = midZ; }
+  }
+  return { x:loX, z:loZ };
+}
+// Resolves one axis of a drag step by sweeping the old->target segment in samples rather
+// than only checking the final target. A single mousemove event (especially several
+// coalesced into one by the browser, or just a fast flick) can otherwise jump clean over a
+// thin obstacle: both endpoints end up collision-free even though the piece should have
+// been stopped partway through, popping it straight out the other side instead of landing
+// flush against whatever it hit.
+function resolveMoveAlongSegment(obj, oldX, oldZ, targetX, targetZ){
+  const SAMPLES = 20;
+  let lastSafeX = oldX, lastSafeZ = oldZ;
+  for(let i=1;i<=SAMPLES;i++){
+    const t = i/SAMPLES;
+    const x = oldX + (targetX-oldX)*t, z = oldZ + (targetZ-oldZ)*t;
+    if(collidesAt(obj, x, z)) return slideToContact(obj, lastSafeX, lastSafeZ, x, z);
+    lastSafeX = x; lastSafeZ = z;
+  }
+  return { x:targetX, z:targetZ };
+}
 // Small fixtures mounted right at another piece's edge (e.g. a faucet against a sink)
 // are excluded from mutual collision — only furniture-scale pieces bump each other.
 const COLLIDES_WITH_FURNITURE = new Set(['base','wall','tower','sink','fridge','corner','hood']);
@@ -803,12 +831,14 @@ window.addEventListener('pointermove', (ev)=>{
     const oldX = selected.position.x, oldZ = selected.position.z;
 
     // Resolve X and Z independently so the piece slides along whatever it bumps into,
-    // instead of being blocked outright or popping through it.
+    // instead of being blocked outright or popping through it. The segment sweep (see
+    // resolveMoveAlongSegment) makes it land flush against the obstacle with no leftover
+    // gap, and keeps it from popping through to the far side on a fast/coalesced jump.
     const cx = clampPosToRoom(clamped.x, oldZ, ry, dims).x;
-    selected.position.x = collidesAt(selected, cx, oldZ) ? oldX : cx;
+    selected.position.x = resolveMoveAlongSegment(selected, oldX, oldZ, cx, oldZ).x;
 
     const cz = clampPosToRoom(selected.position.x, clamped.z, ry, dims).z;
-    selected.position.z = collidesAt(selected, selected.position.x, cz) ? oldZ : cz;
+    selected.position.z = resolveMoveAlongSegment(selected, selected.position.x, oldZ, selected.position.x, cz).z;
 
     if(selectBox) selectBox.update();
     updateLockBadgePosition();
